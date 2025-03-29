@@ -314,3 +314,51 @@ class VideoGenerator:
             frames.append(frame_path)
         
         return frames
+    
+    def parallel_generate_frames(self, frame_batches, frames_dir):
+        """並列処理でフレームを生成"""
+        start_time = self.log_performance('parallel_generate_frames')
+        all_frames = []
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = [executor.submit(self.generate_frame_batch, batch) for batch in frame_batches]
+            for future in concurrent.futures.as_completed(futures):
+                all_frames.extend(future.result())
+        
+        self.log_performance('parallel_generate_frames', start_time)
+        return all_frames
+    
+    def parallel_generate_voices(self, segments):
+        """並列処理で音声を合成"""
+        start_time = self.log_performance('parallel_generate_voices')
+        
+        def process_voice(idx, segment):
+            audio_path = os.path.join(self.temp_dir, f"audio_{idx:04d}.wav")
+            speaker_id = AOYAMA_RYUSEI_SPEAKER_ID
+            actual_duration = self.generate_voice(segment['voiceText'], speaker_id, audio_path)
+            return {
+                'segment': segment,
+                'audio_path': audio_path,
+                'actual_duration': actual_duration,
+                'idx': idx
+            }
+        
+        # 並列処理で音声合成
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, self.max_workers)) as executor:
+            futures = {executor.submit(process_voice, idx, segment): idx 
+                      for idx, segment in enumerate(segments)}
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    idx = futures[future]
+                    logger.error(f"セグメント {idx} の音声合成中にエラー: {e}")
+        
+        # インデックス順にソート
+        results.sort(key=lambda x: x['idx'])
+        
+        self.log_performance('parallel_generate_voices', start_time)
+        return results
