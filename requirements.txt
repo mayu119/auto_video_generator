@@ -1,0 +1,4 @@
+pillow>=9.0.0
+requests>=2.27.1
+numpy>=1.22.0
+matplotlib>=3.5.0
