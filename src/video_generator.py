@@ -215,3 +215,102 @@ class VideoGenerator:
         except Exception as e:
             logger.warning(f"警告: 音声ファイルの長さを取得できませんでした: {e}")
             return 3.0  # デフォルト値
+    
+    def create_frame(self, top_text=None, bottom_text=None, width=1920, height=1080):
+        """テロップ付きのフレームを生成する（最適化版）"""
+        # 背景
+        img_array = np.ones((height, width, 3), dtype=np.uint8) * 255  # 白背景
+        img = Image.fromarray(img_array)
+        draw = ImageDraw.Draw(img)
+        
+        # 上部テロップ処理（最大2行）
+        if top_text:
+            y_position = height * 0.15  # 上から15%の位置
+            # 改行文字で分割
+            if '\n' in top_text:
+                lines = top_text.split('\n')
+                line1 = lines[0]
+                line2 = lines[1] if len(lines) > 1 else ""
+                # フォントサイズ計算（両方の行に適用される共通サイズ）
+                max_line_len = max(len(line1), len(line2))
+                font_size = self.calculate_font_size_by_length(max_line_len, min_size=42, max_size=72)
+                font = ImageFont.truetype(self.font_path, font_size)
+                # 2行描画
+                line_spacing = font_size * 1.2
+                draw.text((width // 2, int(y_position - line_spacing/2)), line1, font=font, fill='black', anchor='mm', align='center')
+                draw.text((width // 2, int(y_position + line_spacing/2)), line2, font=font, fill='black', anchor='mm', align='center')
+            else:
+                # 長いテキストは自動的に適切な位置で改行
+                if len(top_text) > 25:
+                    # 適切な改行位置を探す
+                    pos = self.find_line_break_position(top_text)
+                    line1 = top_text[:pos].strip()
+                    line2 = top_text[pos:].strip()
+                    # フォントサイズ計算
+                    max_line_len = max(len(line1), len(line2))
+                    font_size = self.calculate_font_size_by_length(max_line_len, min_size=42, max_size=72)
+                    font = ImageFont.truetype(self.font_path, font_size)
+                    # 2行描画
+                    line_spacing = font_size * 1.2
+                    draw.text((width // 2, int(y_position - line_spacing/2)), line1, font=font, fill='black', anchor='mm', align='center')
+                    draw.text((width // 2, int(y_position + line_spacing/2)), line2, font=font, fill='black', anchor='mm', align='center')
+                else:
+                    # 1行のみの場合
+                    font_size = self.calculate_font_size_by_length(len(top_text), min_size=48, max_size=80)
+                    font = ImageFont.truetype(self.font_path, font_size)
+                    draw.text((width // 2, int(y_position)), top_text, font=font, fill='black', anchor='mm', align='center')
+        
+        # 下部テロップ（常に1行）
+        if bottom_text:
+            y_position = height * 0.8  # 下から20%の位置
+            font_size = self.calculate_font_size_by_length(len(bottom_text), min_size=42, max_size=72)
+            font = ImageFont.truetype(self.font_path, font_size)
+            draw.text((width // 2, int(y_position)), bottom_text, font=font, fill='black', anchor='mm', align='center')
+        
+        return img
+    
+    def generate_frame_batch(self, batch_info):
+        """フレームのバッチを生成する（並列処理用）"""
+        start_idx = batch_info['start_idx']
+        frame_count = batch_info['frame_count']
+        frame_times = batch_info['frame_times']
+        segments = batch_info['segments']
+        frames_dir = batch_info['frames_dir']
+        frames = []
+        
+        for i in range(frame_count):
+            frame_idx = start_idx + i
+            frame_time = frame_times[i]
+            
+            # 現在の時間に表示すべき上部と下部のテキストを探す
+            top_text = None
+            bottom_text = None
+            
+            # 現在アクティブな上部字幕を探す
+            current_top_segment = None
+            for segment in segments:
+                if segment['position'] == 'top' and segment['start_time'] <= frame_time < segment['end_time'] + segment.get('extend_time', 0):
+                    current_top_segment = segment
+                    top_text = segment['text']
+                    break
+            
+            # 上部字幕がアクティブな場合、対応する下部字幕を探す
+            if current_top_segment:
+                segment_id = current_top_segment['segmentId']
+                # 対応する下部字幕はIDが1大きいはず
+                next_segment_id = segment_id + 1
+                
+                for segment in segments:
+                    if segment['position'] == 'bottom' and segment['segmentId'] == next_segment_id:
+                        # 下部字幕の表示はタイミングに依存
+                        if segment['start_time'] <= frame_time < segment['end_time']:
+                            bottom_text = segment['text']
+                        break
+            
+            # フレームを生成
+            frame = self.create_frame(top_text=top_text, bottom_text=bottom_text)
+            frame_path = os.path.join(frames_dir, f"frame_{frame_idx:06d}.png")
+            frame.save(frame_path)
+            frames.append(frame_path)
+        
+        return frames
